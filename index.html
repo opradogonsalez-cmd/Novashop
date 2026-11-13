@@ -41,26 +41,12 @@ label{display:block;margin:10px 0 4px;font-size:.85rem;color:var(--mu)}
 </style>
 </head>
 <body>
-<div id="app"><div class="em">Cargando catálogo...</div></div>
+<div id="app"></div>
 <div id="modal"></div>
 
 <script src="https://cloudflare.com"></script>
-<script type="module">
-import { initializeApp } from "https://gstatic.com";
-import { getFirestore, doc, setDoc, onSnapshot } from "https://gstatic.com";
-
-const firebaseConfig = {
-  apiKey: "AIzaSyCzXKWmw3HwbxYQzQu6CKIOVSELhdwWXUYA",
-  authDomain: "://firebaseapp.com",
-  projectId: "novashop-a32e3",
-  storageBucket: "novashop-a32e3.firebasestorage.app",
-  messagingSenderId: "1064837959323",
-  appId: "1:1064837959323:web:2c972d1b43b805f7e7403e"
-};
-
-const fbApp = initializeApp(firebaseConfig);
-const db = getFirestore(fbApp);
-const storeDocRef = doc(db, "tienda", "principal");
+<script>
+const DB_URL = "https://googleapis.com";
 
 let S = {
   store: {
@@ -91,6 +77,11 @@ let S = {
   ]
 };
 
+try {
+  const cached = localStorage.getItem('novashop_cache');
+  if (cached) S = JSON.parse(cached);
+} catch (e) {}
+
 let admin = false, cart = {}, q = '', cat = '', saving = false;
 try { cart = JSON.parse(localStorage.getItem('novashop_cart') || '{}') || {}; } catch (e) {}
 
@@ -100,41 +91,54 @@ const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp
 const saveCart = () => { try { localStorage.setItem('novashop_cart', JSON.stringify(cart)); } catch (e) {} };
 const money = n => `${esc(S.store.cur)} ${Number(n || 0).toLocaleString('es-NI')}`;
 
-// Escucha cambios en tiempo real desde Firebase
-onSnapshot(storeDocRef, (snap) => {
-  if (snap.exists()) {
-    S = snap.data();
-    document.title = `${S.store.name} - Catálogo Digital`;
-  } else {
-    // Si es la primera vez que se abre, guarda los datos iniciales en la nube
-    setDoc(storeDocRef, S).catch(console.error);
+async function loadCloud() {
+  try {
+    const res = await fetch(DB_URL + "?t=" + Date.now());
+    if (res.ok) {
+      const data = await res.json();
+      if (data.fields && data.fields.payload && data.fields.payload.stringValue) {
+        S = JSON.parse(data.fields.payload.stringValue);
+        localStorage.setItem('novashop_cache', JSON.stringify(S));
+        document.title = `${S.store.name} - Catálogo Digital`;
+        render();
+      }
+    } else if (res.status === 404) {
+      await syncCloud();
+    }
+  } catch (e) {
+    console.log("Modo sin conexión o cargando caché local");
   }
-  render();
-}, (err) => {
-  console.error("Error de conexión:", err);
-  render();
-});
+}
 
 async function syncCloud() {
   saving = true;
   render();
   try {
-    await setDoc(storeDocRef, S);
+    localStorage.setItem('novashop_cache', JSON.stringify(S));
+    const res = await fetch(DB_URL, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        fields: {
+          payload: { stringValue: JSON.stringify(S) }
+        }
+      })
+    });
+    if (!res.ok) throw new Error("Error HTTP " + res.status);
   } catch (e) {
-    alert("Error al guardar en la nube. Verifica tu conexión a internet.");
-    console.error(e);
+    alert("No se pudo guardar en la nube. Revisa tu conexión a internet.");
   }
   saving = false;
   render();
 }
 
-window.toggleTheme = () => {
+function toggleTheme() {
   const cur = document.documentElement.getAttribute('data-theme');
   const next = cur === 'dark' ? 'light' : 'dark';
   document.documentElement.setAttribute('data-theme', next);
-};
+}
 
-window.openAdmin = () => {
+function openAdmin() {
   if (admin) { admin = false; render(); return; }
   const pass = prompt("Ingresa la clave de administrador (por defecto: 1234):");
   if (pass === "1234") {
@@ -143,9 +147,9 @@ window.openAdmin = () => {
   } else if (pass !== null) {
     alert("Clave incorrecta");
   }
-};
+}
 
-window.showQR = () => {
+function showQR() {
   const url = window.location.href;
   mod.innerHTML = `
     <div class="ov" onclick="if(event.target===this)closeMod()">
@@ -160,24 +164,28 @@ window.showQR = () => {
         <button class="b" style="width:100%" onclick="closeMod()">Listo</button>
       </div>
     </div>`;
-  new QRCode(document.getElementById("qr"), { text: url, width: 200, height: 200 });
-};
+  if (window.QRCode) {
+    new QRCode(document.getElementById("qr"), { text: url, width: 200, height: 200 });
+  } else {
+    document.getElementById("qr").innerHTML = "<p style='color:#000'>Copia el enlace de abajo para compartir.</p>";
+  }
+}
 
-window.addCart = (id) => {
+function addCart(id) {
   cart[id] = (cart[id] || 0) + 1;
   saveCart();
   render();
-};
+}
 
-window.chgQty = (id, d) => {
+function chgQty(id, d) {
   cart[id] = (cart[id] || 0) + d;
   if (cart[id] <= 0) delete cart[id];
   saveCart();
   openCart();
   render();
-};
+}
 
-window.openCart = () => {
+function openCart() {
   const items = Object.entries(cart).map(([id, qty]) => {
     const p = S.products.find(x => x.id === id);
     return p ? { ...p, qty } : null;
@@ -197,6 +205,4 @@ window.openCart = () => {
             ${items.map(it => `
               <div class="ln">
                 <div>
-                  <strong>${esc(it.name)}</strong><br>
-                  <span style="color:var(--ac);font-size:.9rem">${money(it.price)} c/u</span>
-                </div>
+  
